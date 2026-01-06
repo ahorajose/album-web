@@ -1,65 +1,258 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+type Song = {
+  id: number;
+  title: string;
+  cover_path: string | null;
+  audio_url: string | null;
+  mosaic_position: number;
+  launch_start: string;
+};
+
+export default function AlbumPage() {
+  const [user, setUser] = useState<any>(null);
+  const [songs, setSongs] = useState<Song[]>([]);
+  const [unlockedIds, setUnlockedIds] = useState<number[]>([]);
+  const [activeSong, setActiveSong] = useState<Song | null>(null);
+  const [overlaySong, setOverlaySong] = useState<Song | null>(null);
+  const [showCongrats, setShowCongrats] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const init = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      setUser(user);
+
+      const { data: songsData } = await supabase
+        .from("songs")
+        .select("*")
+        .order("mosaic_position");
+
+      setSongs(songsData || []);
+
+      if (user) {
+        const { data: unlocked } = await supabase
+          .from("user_songs")
+          .select("song_id")
+          .eq("user_id", user.id);
+
+        const ids = unlocked?.map((u) => u.song_id) || [];
+        setUnlockedIds(ids);
+
+        // 🏁 detectar álbum completo (una sola vez)
+        if (ids.length === 9 && !localStorage.getItem("album_completed_seen")) {
+          const { data: completed } = await supabase
+            .from("album_completions")
+            .select("user_id")
+            .eq("user_id", user.id)
+            .single();
+
+          if (completed) {
+            setShowCongrats(true);
+            localStorage.setItem("album_completed_seen", "true");
+          }
+        }
+      }
+
+      setLoading(false);
+    };
+
+    init();
+  }, []);
+
+  if (loading) {
+    return <p style={{ padding: 20 }}>Cargando álbum…</p>;
+  }
+
+  const now = new Date();
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <main style={{ padding: 20 }}>
+      <h1 style={{ marginBottom: 16 }}>Mi álbum</h1>
+
+      {/* MOSAICO */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          maxWidth: 600,
+          border: "1px solid #ccc",
+        }}
+      >
+        {Array.from({ length: 9 }).map((_, index) => {
+          const song =
+            songs.find((s) => s.mosaic_position === index + 1) || null;
+
+          if (!song) {
+            return (
+              <div
+                key={index}
+                style={{
+                  aspectRatio: "1 / 1",
+                  border: "1px solid #ddd",
+                }}
+              />
+            );
+          }
+
+          const isLaunched = now >= new Date(song.launch_start);
+          const isUnlocked = unlockedIds.includes(song.id);
+
+          return (
+            <div
+              key={index}
+              onClick={() => {
+                if (isUnlocked) {
+                  setActiveSong(song);
+                } else if (isLaunched) {
+                  setOverlaySong(song);
+                }
+              }}
+              style={{
+                aspectRatio: "1 / 1",
+                border: "1px solid #ddd",
+                background: "#f5f5f5",
+                cursor:
+                  isUnlocked || isLaunched ? "pointer" : "default",
+                position: "relative",
+                overflow: "hidden",
+              }}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              {isUnlocked && song.cover_path && (
+                <img
+                  src={song.cover_path}
+                  alt={song.title}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              )}
+
+              {!isUnlocked && isLaunched && (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.45)",
+                    color: "white",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 24,
+                  }}
+                >
+                  🔒
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* REPRODUCTOR */}
+      {activeSong?.audio_url && (
+        <div style={{ marginTop: 24 }}>
+          <h2>{activeSong.title}</h2>
+          <audio
+            src={activeSong.audio_url}
+            controls
+            autoPlay
+            style={{ width: "100%" }}
+          />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      )}
+
+      {/* OVERLAY INTERCAMBIO */}
+      {overlaySong && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.8)",
+            color: "white",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={() => setOverlaySong(null)}
+        >
+          <div
+            style={{
+              background: "#111",
+              padding: 32,
+              maxWidth: 420,
+              textAlign: "center",
+              borderRadius: 8,
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <h2 style={{ marginBottom: 16 }}>
+              Esta canción ya está circulando
+            </h2>
+            <p style={{ marginBottom: 24 }}>
+              Para desbloquearla necesitás conseguir la figurita
+              física.
+              <br />
+              Andá a cambiar con tus amigos.
+            </p>
+            <button onClick={() => setOverlaySong(null)}>
+              Cerrar
+            </button>
+          </div>
         </div>
-      </main>
-    </div>
+      )}
+
+      {/* 🎉 FELICITACIONES */}
+      {showCongrats && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            color: "white",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 2000,
+          }}
+        >
+          <div
+            style={{
+              background: "#111",
+              padding: 40,
+              maxWidth: 480,
+              textAlign: "center",
+              borderRadius: 12,
+            }}
+          >
+            <h1 style={{ marginBottom: 24 }}>Gracias</h1>
+            <p style={{ marginBottom: 24 }}>
+              Gracias por acompañarme durante todo este recorrido.
+              <br />
+              Este álbum existe por el tiempo, los encuentros
+              <br />
+              y las manos que lo hicieron circular.
+            </p>
+
+            <button onClick={() => setShowCongrats(false)}>
+              Volver al álbum
+            </button>
+          </div>
+        </div>
+      )}
+    </main>
   );
 }
+
